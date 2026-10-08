@@ -18,10 +18,20 @@ from src.linkedin_scanner import LinkedInScanner
 from src.linkedin_applicant import LinkedInApplicant
 from src.resume_tailor import ResumeTailor
 from src.cover_letter_gen import CoverLetterGenerator
+from src.resume_selector import ResumeSelector
+from src.cv_optimizer import CVOptimizer
 from src.tracker import ApplicationTracker
+from src.deslop import clean_docx
 from src.utils import load_config, ensure_dir, sanitize_filename, get_timestamp
 
 logger = logging.getLogger("aipply")
+
+STOP_FILE = PROJECT_ROOT / ".stop"
+
+
+def stop_file_exists() -> bool:
+    """Return True if the emergency stop file (.stop) is present."""
+    return STOP_FILE.exists()
 
 
 def setup_logging(verbose=False):
@@ -111,7 +121,8 @@ def run_cycle(args=None):
 
     # Initialize modules
     scanner = LinkedInScanner(config=settings)
-    tailor = ResumeTailor(config=settings)
+    candidate = profile.get("candidate", {})
+    tailor = ResumeTailor(config={**settings, "candidate_name": candidate.get("name", "")})
     cover_gen = CoverLetterGenerator(config=settings)
     applicant = (
         LinkedInApplicant(config=settings, profile=profile)
@@ -120,19 +131,27 @@ def run_cycle(args=None):
     )
 
     try:
+        # Emergency stop check — abort before touching the browser
+        if stop_file_exists():
+            logger.warning("EMERGENCY STOP — .stop file detected. Cycle aborted.")
+            return
+
         # Connect browser for scanner
         scanner.connect_browser(cdp_url=args.cdp_url)
         if applicant:
             applicant.connect_browser(cdp_url=args.cdp_url)
 
-        # Search for jobs
+        # Search for jobs (server-side f_TPR past-week filter + client-side age check)
         search_cfg = settings.get("search", {})
+        max_age_days = int(search_cfg.get("max_age_days", 7))
         all_jobs = []
         for keyword in search_cfg.get("keywords", []):
             for location in search_cfg.get("locations", []):
                 logger.info(f"Searching: '{keyword}' in '{location}'")
                 try:
-                    results = scanner.search_jobs([keyword], location)
+                    results = scanner.search_jobs(
+                        [keyword], location, max_age_days=max_age_days
+                    )
                     all_jobs.extend(results)
                     logger.info(f"  Found {len(results)} results")
                 except Exception as e:
@@ -179,15 +198,22 @@ def run_cycle(args=None):
         )
         jobs_to_process = detailed_jobs[:max_apps]
 
-        base_resume = PROJECT_ROOT / "templates" / "base_resume.docx"
+        base_resume_default = PROJECT_ROOT / "templates" / "base_resume.docx"
         example_cover_letter = PROJECT_ROOT / "templates" / "base_cover_letter.docx"
         candidate = profile.get("candidate", {})
+        selector = ResumeSelector(config=settings)
+        optimizer = CVOptimizer(config=settings)
 
         applied_count = 0
         failed_count = 0
         skipped_count = 0
 
         for i, job in enumerate(jobs_to_process, 1):
+            # Check emergency stop before each application
+            if stop_file_exists():
+                logger.warning("EMERGENCY STOP — .stop file detected mid-cycle.")
+                break
+
             company = job.get("company", "unknown")
             role = job.get("title", "role")
             job_url = job.get("url", "")
@@ -201,6 +227,14 @@ def run_cycle(args=None):
             job_dir = ensure_dir(PROJECT_ROOT / "output" / "applications" / dir_name)
 
             try:
+                # A0. Select CV variant for this job
+                selected = selector.select(job)
+                base_resume = selected["template"]
+                if not Path(base_resume).exists():
+                    logger.warning("  Variant template missing (%s), using default", base_resume)
+                    base_resume = str(base_resume_default)
+                logger.info("  CV variant: %s (score %s)", selected["name"], selected["score"])
+
                 # A. Tailor resume
                 logger.info("  Tailoring resume...")
                 resume_path = tailor.tailor_and_save(
@@ -211,6 +245,19 @@ def run_cycle(args=None):
                     output_dir=job_dir,
                 )
                 logger.info(f"  Resume saved: {resume_path}")
+
+                # A1. AI CV score for the dashboard
+                cv_score = None
+                score_details = None
+                try:
+                    score_result = optimizer.score_resume(
+                        resume_path, description, role=role, company=company
+                    )
+                    cv_score = score_result.get("score")
+                    score_details = score_result
+                    logger.info("  CV score: %s/100", cv_score)
+                except Exception as e:
+                    logger.warning("  CV scoring failed: %s", e)
 
                 # B. Generate cover letter
                 logger.info("  Generating cover letter...")
@@ -224,19 +271,30 @@ def run_cycle(args=None):
                 )
                 logger.info(f"  Cover letter saved: {cl_path}")
 
-                # C. Apply (unless dry run)
+                # C. Save job description and de-slop generated docs
+                jd_path = job_dir / "job_description.txt"
+                jd_path.write_text(
+                    f"Company: {company}\nTitle: {role}\nLocation: {job.get('location', '')}"
+                    f"\nURL: {job_url}\nPosted: {job.get('posted_text', 'unknown')}\n\n{description}"
+                )
+                clean_docx(resume_path)
+                clean_docx(cl_path)
+
+                # D. Apply (unless dry run)
                 if args.dry_run:
                     logger.info(f"  [DRY RUN] Would apply to {role} at {company}")
                     status = "dry_run"
                     notes = "Dry run - not applied"
+                    apply_method = ""
                 else:
                     logger.info("  Submitting application...")
                     result = applicant.apply_to_job(job, resume_path, cl_path)
                     status = result.get("status", "unknown")
                     notes = result.get("reason", "")
+                    apply_method = result.get("apply_method", "")
                     logger.info(f"  Result: {status} - {notes}")
 
-                # D. Record in tracker
+                # E. Record in tracker
                 tracker.add_application(
                     company=company,
                     position=role,
@@ -245,12 +303,18 @@ def run_cycle(args=None):
                     status=status,
                     resume_path=str(resume_path) if resume_path else "",
                     cover_letter_path=str(cl_path) if cl_path else "",
+                    jd_file_path=str(jd_path) if jd_path else "",
                     notes=notes,
+                    cv_variant=selected["key"],
+                    cv_score=cv_score,
+                    posted_at=job.get("posted_at", "") or "",
+                    posted_text=job.get("posted_text", "") or "",
+                    apply_method=apply_method,
                 )
 
                 if status == "applied":
                     applied_count += 1
-                elif status == "failed":
+                elif status in ("failed", "apply_failed"):
                     failed_count += 1
                 else:
                     skipped_count += 1

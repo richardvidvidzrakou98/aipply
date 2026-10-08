@@ -1,47 +1,93 @@
-# Aipply - Job Search Settings
+# Aipply - Job Search Settings (configured for Richard Vidzrakou)
 
 search:
-  # IC roles (90% of applications)
   keywords:
-    - "compliance analyst"
-    - "senior compliance analyst"
-    - "compliance officer"
-    - "risk analyst"
-    - "senior risk analyst"
-    - "audit analyst"
-    - "senior audit analyst"
-    - "governance analyst"
-    - "regulatory analyst"
-    - "compliance specialist"
-  # Manager roles (10% cap — cron instructions limit these)
-  manager_keywords:
-    - "compliance manager"
-    - "audit manager"
+    - "devops engineer"
+    - "cloud engineer"
+    - "backend developer"
+    - "site reliability engineer"
+    - "platform engineer"
+    - "junior software engineer"
+  # A listing must have one of these terms in its title. LinkedIn search can
+  # return loosely related roles, so this is the final guard before a job is
+  # opened or applied to.
+  title_include_keywords:
+    - "devops"
+    - "cloud"
+    - "backend"
+    - "site reliability"
+    - "platform engineer"
+    - "junior software engineer"
   locations:
-    - "San Francisco Bay Area"
     - "Remote"
+    - "Ghana"
+  # Only apply to jobs posted within this many days (1 week default).
+  # LinkedIn's f_TPR=r604800 server-side filter enforces "past week";
+  # the client-side check reads the exact posted time as a second guard.
+  max_age_days: 7
+  # Experience levels to target (junior / intern / entry / mid only).
+  # Passed to LinkedIn's f_E filter: 1=Internship, 2=Entry, 3=Associate, 4=Mid-Senior
   experience_levels:
-    - "Mid-Senior level"
-    - "Director"
+    - "Internship"
+    - "Entry level"
     - "Associate"
+    - "Mid-Senior level"
   job_types:
     - "Full-time"
 
 exclusions:
+  # Current/former employers — never apply
   companies:
-    - "PG&E"
-    - "Pacific Gas and Electric"
-    - "Pacific Gas & Electric"
+    - "Azubi Africa"
+    - "AmaliTech"
+    - "CropCapital"
+    - "Doyen Institute"
+    - "Kaaseman Rural Bank"
+  # Skip these words in job titles (senior+ roles are out of scope)
+  keywords:
+    - "senior"
+    - "sr."
+    - "sr "
+    - "senior manager"
+    - "director"
+    - "principal"
+    - "staff engineer"
+    - "lead engineer"
+    - "engineering manager"
+    - "head of"
+    - "java"
+    - "ios"
+    - "ui/ux"
+    - "ui designer"
+    - "frontend"
+    - "unpaid"
 
 application:
-  email: "danna.dobi@gmail.com"
+  email: "richardvidzrakou98@gmail.com"
   auto_apply: true
+  # Only LinkedIn Easy Apply jobs are automated. Jobs that require applying on
+  # an external career site are saved as manual_needed with the job link.
+  easy_apply_only: true
   max_applications_per_cycle: 10
 
 schedule:
   interval_minutes: 30
   delay_between_applications_seconds: 600  # 10 min between each application
 
-openai:
-  model: "gpt-4"
+browser:
+  # Persistent Chrome profile — LinkedIn login survives across runs.
+  # Leave unset to use the default: ~/.aipply/chrome-profile
+  # profile_dir: "/path/to/custom/profile"
+
+# LLM via OpenRouter (https://openrouter.ai/keys). Free by default;
+# set OPENROUTER_API_KEY in .env
+llm:
+  # openrouter/free auto-routes to the best currently-available free model,
+  # so it keeps working as individual free models come and go.
+  model: "openrouter/free"
+  # Used automatically if the primary model is rate-limited or unavailable
+  fallback_models:
+    - "nvidia/nemotron-3-ultra-550b-a55b:free"
+    - "qwen/qwen3.8-27b:free"
   temperature: 0.7
+  max_tokens: 2000

@@ -46,8 +46,21 @@ class ApplicationTracker:
         jd_file_path: str = "",
         notes: str = "",
         screenshots: list = None,
+        cv_variant: str = "",
+        cv_score: float = None,
+        posted_at: str = "",
+        posted_text: str = "",
+        apply_method: str = "",
     ) -> dict:
-        """Record a new job application."""
+        """Record a new job application.
+
+        New fields:
+            cv_variant: which base CV was used (devops / cloud / software_engineer)
+            cv_score: AI match score 0-100 (None while unscored)
+            posted_at: ISO timestamp the job was posted on LinkedIn
+            posted_text: raw LinkedIn string, e.g. "3 days ago"
+            apply_method: easy_apply | manual (external site)
+        """
         # Convert all paths to absolute for file:// links
         if resume_path:
             resume_path = str(Path(resume_path).resolve())
@@ -69,12 +82,52 @@ class ApplicationTracker:
             "job_description": job_description,
             "notes": notes,
             "screenshots": screenshots or [],
+            "cv_variant": cv_variant,
+            "cv_score": cv_score,
+            "posted_at": posted_at,
+            "posted_text": posted_text,
+            "apply_method": apply_method,
             "applied_at": datetime.now().isoformat(),
             "updated_at": datetime.now().isoformat(),
         }
         self.applications.append(application)
         self._save()
         return application
+
+    def update_cv_data(
+        self,
+        app_id: int,
+        cv_score: float = None,
+        cv_variant: str = None,
+        resume_path: str = None,
+        score_details: dict = None,
+    ) -> Optional[dict]:
+        """Update CV-related fields for an application (scoring/optimization).
+
+        Args:
+            app_id: Application id.
+            cv_score: New match score (0-100). None leaves it unchanged.
+            cv_variant: New variant key. None leaves it unchanged.
+            resume_path: New (optimized) resume path. None/"" leaves unchanged.
+            score_details: Full score breakdown dict stored under cv_score_details.
+
+        Returns:
+            The updated application dict, or None if not found.
+        """
+        for app in self.applications:
+            if app["id"] == app_id:
+                if cv_score is not None:
+                    app["cv_score"] = cv_score
+                if cv_variant is not None:
+                    app["cv_variant"] = cv_variant
+                if resume_path:
+                    app["resume_path"] = str(Path(resume_path).resolve())
+                if score_details is not None:
+                    app["cv_score_details"] = score_details
+                app["updated_at"] = datetime.now().isoformat()
+                self._save()
+                return app
+        return None
 
     def update_status(self, app_id: int, status: str, notes: str = ""):
         """Update the status of an application."""
@@ -86,6 +139,22 @@ class ApplicationTracker:
                     app["notes"] = notes
                 self._save()
                 return app
+        return None
+
+    def append_cv_review(self, app_id: int, review: dict) -> Optional[dict]:
+        """Persist a versioned CV/JD analysis and expose its latest score."""
+        for app in self.applications:
+            if app["id"] == app_id:
+                history = list(app.get("cv_review_history") or [])
+                version = len(history) + 1
+                saved_review = {**review, "version": version, "created_at": datetime.now().isoformat()}
+                history.append(saved_review)
+                app["cv_review_history"] = history
+                app["cv_score"] = saved_review.get("score")
+                app["cv_score_details"] = saved_review
+                app["updated_at"] = datetime.now().isoformat()
+                self._save()
+                return saved_review
         return None
 
     def get_applications(self, status: Optional[str] = None) -> list:

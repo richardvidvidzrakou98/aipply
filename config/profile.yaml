@@ -1,26 +1,63 @@
-# Aipply - Candidate Profile
+# Aipply - Candidate Profile (Richard Vidzrakou)
 
 candidate:
-  name: "Danna Dobi"
-  email: "danna.dobi@gmail.com"
-  phone: ""  # Fill in
-  linkedin_url: ""  # Fill in
-  location: "San Francisco Bay Area"
+  name: "Richard Vidzrakou"
+  email: "richardvidzrakou98@gmail.com"
+  phone: "+233 505631264"
+  linkedin_url: "linkedin.com/in/richard-vidzrakou"
+  location: "Accra, Ghana"
+  years_experience: 3
+
+  # Experience levels targeted — junior, intern, entry-level and mid-level only.
+  # (Used by the search filter; LinkedIn levels: Internship, Entry level,
+  #  Associate, Mid-Senior level. Senior+ levels are excluded from search.)
+  experience_levels:
+    - "Internship"
+    - "Entry level"
+    - "Associate"
+    - "Mid-Senior level"
 
   summary: |
-    Experienced compliance, risk, and governance professional.
+    Software Engineer with 3+ years of experience building scalable web and
+    backend applications, with hands-on experience in cloud and DevOps
+    engineering on AWS. Experienced team lead delivering serverless,
+    cloud-native, and AI-powered solutions using AWS, Terraform, Docker, and
+    Kubernetes.
 
   strengths:
-    - Regulatory compliance
-    - Risk management
-    - Audit oversight
-    - Corporate governance
-    - Policy development
+    - AWS cloud architecture (EC2, S3, Lambda, API Gateway, VPC, IAM, DynamoDB)
+    - Infrastructure as Code with Terraform and AWS SAM
+    - Docker and Kubernetes containerization
+    - CI/CD pipelines with GitHub Actions
+    - Backend development with Node.js, Laravel, and PostgreSQL
+    - Linux administration and monitoring with CloudWatch
 
   target_roles:
-    - Compliance Manager
-    - Risk Manager
-    - Audit Manager
-    - Compliance Officer
-    - Governance Analyst
-    - Senior Compliance Analyst
+    - Junior DevOps Engineer
+    - DevOps Engineer
+    - Junior Cloud Engineer
+    - Cloud Engineer
+    - Junior Backend Developer
+    - Backend Developer
+    - Junior Software Engineer
+    - Site Reliability Engineer
+    - Platform Engineer
+
+# CV variants — one base resume per role family. The selector picks the best
+# match per job posting based on title/description keywords.
+resume_variants:
+  - key: devops
+    name: DevOps Engineer
+    template: devops_resume.docx
+  - key: cloud
+    name: Cloud Engineer
+    template: cloud_resume.docx
+  - key: software_engineer
+    name: Software Engineer
+    template: software_engineer_resume.docx
+
+# Optional overrides for LinkedIn Easy Apply screening questions.
+# Uncomment and edit to change the default answers:
+# application_questions:
+#   "require sponsorship": "Yes"
+#   "years of experience": "3"

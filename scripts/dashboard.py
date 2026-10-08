@@ -9,10 +9,14 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import yaml
 from flask import Flask, abort, jsonify, render_template_string, request, send_file
 
-PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8092
-ROOT = Path(__file__).resolve().parent.parent
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 8092
 TRACKER = ROOT / "output" / "tracker.json"
 
 app = Flask(__name__)
@@ -34,6 +38,7 @@ _cycle_state = {
 # ---------------------------------------------------------------------------
 
 STATUS_COLORS = {
+    "applying": ("#6a1b9a", "#f3e5f5", "Applying"),
     "materials_ready": ("#1565c0", "#e3f2fd", "Materials Ready"),
     "applied": ("#2e7d32", "#e8f5e9", "Applied"),
     "rejected": ("#c62828", "#ffebee", "Rejected"),
@@ -71,6 +76,39 @@ def _format_date(iso_str: str) -> str:
         return dt.strftime("%b %d, %Y")
     except (ValueError, TypeError):
         return iso_str
+
+
+def _load_settings():
+    """Load config/settings.yaml from the project root."""
+    try:
+        with open(ROOT / "config" / "settings.yaml") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def _load_profile():
+    """Load config/profile.yaml from the project root."""
+    try:
+        with open(ROOT / "config" / "profile.yaml") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def _score_color(score) -> str:
+    """CSS color class for a CV score bucket."""
+    if score is None:
+        return ""
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return ""
+    if s >= 80:
+        return "green"
+    if s >= 60:
+        return "gold"
+    return "red"
 
 
 def _is_today(iso_str: str) -> bool:
@@ -160,6 +198,23 @@ td { padding: .75rem 1rem; border-bottom: 1px solid #eee; font-size: .9rem; vert
 tr:hover td { background: #f8f9fa; }
 tr:last-child td { border-bottom: none; }
 
+/* CV score pill */
+.score-pill { display: inline-block; min-width: 3.2rem; text-align: center; padding: .25rem .55rem; border-radius: 20px; font-weight: 700; font-size: .82rem; }
+.score-pill.green { background: #e8f5e9; color: #2e7d32; }
+.score-pill.gold { background: #fff8e1; color: #f9a825; }
+.score-pill.red { background: #ffebee; color: #c62828; }
+.score-pill.none { background: #eee; color: #999; }
+
+/* AI optimize modal sections */
+.score-breakdown { display: flex; gap: .75rem; flex-wrap: wrap; margin: .75rem 0; }
+.score-breakdown .bd { background: #f5f7fa; border-radius: 8px; padding: .5rem .9rem; font-size: .85rem; }
+.score-breakdown .bd b { display: block; font-size: 1.2rem; }
+.changes-list li { margin-bottom: .35rem; }
+.spinner { display: inline-block; width: 1rem; height: 1rem; border: 2px solid #ccc; border-top-color: #1565c0; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.btn-ai { background: #6a1b9a !important; color: #fff !important; font-weight: 600; }
+.btn-ai:hover { background: #4a148c !important; }
+
 /* Status badge */
 .badge {
   display: inline-block;
@@ -189,6 +244,8 @@ tr:last-child td { border-bottom: none; }
 .actions .dl:hover { background: #c8e6c9; }
 .actions .ext { color: #6a1b9a; background: #f3e5f5; }
 .actions .ext:hover { background: #e1bee7; }
+.actions .apply { color: #fff; background: #2e7d32; font-weight: 600; }
+.actions .apply:hover { background: #1b5e20; }
 
 /* Modal */
 .modal-backdrop {
@@ -310,6 +367,8 @@ tr:last-child td { border-bottom: none; }
           <th>Company</th>
           <th>Position</th>
           <th>Location</th>
+          <th>Posted</th>
+          <th>CV Score</th>
           <th>Status</th>
           <th>Date Applied</th>
           <th>Actions</th>
@@ -321,10 +380,19 @@ tr:last-child td { border-bottom: none; }
           <td><strong>{{ a.company }}</strong></td>
           <td>{{ a.position }}</td>
           <td>{{ a.location }}</td>
+          <td title="{{ a.posted_at_fmt }}"><span class="badge" style="background:#e8eaf6;color:#283593">{{ a.posted_text or '—' }}</span></td>
+          <td><span class="score-pill {{ a.score_css }}">{{ a.score_display }}</span></td>
           <td><span class="badge" style="background:{{ a.badge_bg }};color:{{ a.badge_fg }}">{{ a.badge_label }}</span></td>
           <td>{{ a.date_fmt }}</td>
           <td>
             <div class="actions">
+              {% if a.can_apply %}
+              <button class="apply" onclick="applyJob({{ a.id }})">🚀 Apply</button>
+              {% endif %}
+              {% if a.can_mark_applied %}
+              <button class="apply" onclick="markApplied({{ a.id }})">✓ Mark applied</button>
+              {% endif %}
+              <button class="btn-ai" onclick="openCvStudio({{ a.id }})">🤖 CV</button>
               {% if a.resume_rel %}
               <button onclick="previewDoc('{{ a.resume_rel }}')">📄 Resume</button>
               <a class="dl" href="/download/{{ a.resume_rel }}">⬇️</a>
@@ -359,6 +427,19 @@ tr:last-child td { border-bottom: none; }
       <button class="close-btn" onclick="closeModal()">&times;</button>
     </div>
     <div class="modal-body" id="modalBody">
+      <p>Loading…</p>
+    </div>
+  </div>
+</div>
+
+<!-- AI CV Studio Modal -->
+<div class="modal-backdrop" id="cvStudioModal">
+  <div class="modal" style="max-width:900px">
+    <div class="modal-header">
+      <span id="cvStudioTitle">🤖 AI CV Studio</span>
+      <button class="close-btn" onclick="closeCvStudio()">&times;</button>
+    </div>
+    <div class="modal-body" id="cvStudioBody">
       <p>Loading…</p>
     </div>
   </div>
@@ -454,9 +535,231 @@ function stopCycle() {
     .catch(err => alert('Failed: ' + err));
 }
 
+function applyJob(id) {
+  if (!confirm('Submit application #' + id + ' via LinkedIn Easy Apply?')) return;
+  fetch('/api/apply', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: id})
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { alert(data.error); return; }
+      refreshStatus();
+      waitForApplication(id);
+    })
+    .catch(err => alert('Failed: ' + err));
+}
+
+function waitForApplication(id) {
+  const poll = () => fetch('/api/application/' + id)
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) throw new Error(data.error);
+      if (data.status === 'applying') {
+        setTimeout(poll, 2000);
+      } else {
+        location.reload();
+      }
+    })
+    .catch(err => alert('Could not refresh application status: ' + err.message));
+  poll();
+}
+
+function markApplied(id) {
+  if (!confirm('Mark application #' + id + ' as applied? Use this after applying yourself on LinkedIn.')) return;
+  fetch('/api/mark-applied', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: id})
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { alert(data.error); return; }
+      location.reload();
+    })
+    .catch(err => alert('Failed: ' + err));
+}
+
 function resumeOps() {
   fetch('/api/resume', { method: 'POST' })
     .then(() => refreshStatus())
+    .catch(err => alert('Failed: ' + err));
+}
+
+// --- AI CV Studio ---
+function openCvStudio(id) {
+  const modal = document.getElementById('cvStudioModal');
+  const body  = document.getElementById('cvStudioBody');
+  modal.classList.add('open');
+  body.innerHTML = '<p style="text-align:center;padding:2rem;color:#888"><span class="spinner"></span> Loading…</p>';
+  fetch('/api/cv/status/' + id)
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { body.innerHTML = '<p style="color:#c62828">' + data.error + '</p>'; return; }
+      renderCvStudio(id, data);
+    })
+    .catch(err => { body.innerHTML = '<p style="color:#c62828">Failed: ' + err + '</p>'; });
+}
+
+function closeCvStudio() {
+  document.getElementById('cvStudioModal').classList.remove('open');
+}
+
+document.getElementById('cvStudioModal').addEventListener('click', function(e) {
+  if (e.target === this) closeCvStudio();
+});
+
+function renderCvStudio(id, data) {
+  const body = document.getElementById('cvStudioBody');
+  document.getElementById('cvStudioTitle').textContent =
+    '🤖 AI CV Studio — ' + data.company + ' · ' + data.position;
+
+  let html = '';
+
+  // Score card
+  if (data.score != null) {
+    html += '<h3 style="margin-top:0">CV Score: <span class="score-pill ' + data.score_css + '">' + data.score + '/100</span>'
+         + ' <small style="color:#888;font-weight:400">via ' + data.model + '</small></h3>';
+    if (data.breakdown && Object.keys(data.breakdown).length) {
+      html += '<div class="score-breakdown">';
+      for (const [k, v] of Object.entries(data.breakdown)) {
+        html += '<div class="bd"><b>' + v + '</b>' + k.replace('_', ' ') + '</div>';
+      }
+      html += '</div>';
+    }
+    if (data.recommendation) html += '<p><b>Recommendation:</b> ' + data.recommendation + '</p>';
+    if (data.strengths && data.strengths.length) {
+      html += '<p><b style="color:#2e7d32">Strengths:</b> ' + data.strengths.join(' · ') + '</p>';
+    }
+    if (data.gaps && data.gaps.length) {
+      html += '<p><b style="color:#c62828">Gaps:</b> ' + data.gaps.join(' · ') + '</p>';
+    }
+  } else {
+    html += '<p>Not scored yet.</p>';
+  }
+
+  if (data.analysis_available && data.requirements && data.requirements.length) {
+    html += '<h3>Requirement evidence matrix' + (data.version ? ' · version ' + data.version : '') + '</h3><div style="overflow:auto"><table><thead><tr><th>Requirement</th><th>Priority</th><th>Status</th><th>Verified CV evidence</th></tr></thead><tbody>';
+    data.requirements.forEach((r, i) => {
+      html += '<tr data-req="' + i + '"><td contenteditable="true" class="req-text">' + r.requirement + '</td><td><select class="req-priority"><option' + (r.priority === 'critical' ? ' selected' : '') + '>critical</option><option' + (r.priority === 'required' ? ' selected' : '') + '>required</option><option' + (r.priority === 'preferred' ? ' selected' : '') + '>preferred</option></select></td><td>' + r.status + '</td><td>' + ((r.evidence || []).join(' · ') || '—') + '</td></tr>';
+    });
+    html += '</tbody></table></div><p><textarea id="cvRevisionInstruction" placeholder="Optional instruction, e.g. treat Kubernetes as preferred" style="width:100%;min-height:60px"></textarea></p><button class="btn-ai" onclick="reviseCvReview(' + id + ')">↻ Recalculate with edits</button>';
+  } else if (data.fallback) {
+    html += '<p style="background:#fff8e1;color:#7a5200;padding:.75rem;border-radius:6px"><b>Basic fallback:</b> AI requirement analysis is unavailable. This score is keyword overlap only.' + (data.ai_error ? ' Provider detail: ' + data.ai_error : '') + '</p>';
+  }
+
+  html += '<div class="actions" style="margin:1rem 0">'
+       +   '<button class="btn-ai" onclick="cvScore(' + id + ')">⭐ Score CV</button>'
+       +   '<button class="btn-ai" onclick="cvOptimize(' + id + ')">✨ Optimize CV for this job</button>'
+       +   '<button onclick="cvReview(' + id + ')">🔍 Full review</button>'
+       + '</div>';
+
+  if (data.variant) {
+    html += '<p style="color:#888;font-size:.85rem">CV variant: <b>' + data.variant + '</b>'
+         + (data.updated_at ? ' · updated ' + data.updated_at : '') + '</p>';
+  }
+
+  html += '<div id="cvStudioResult"></div>';
+  body.innerHTML = html;
+}
+
+function _cvBusy(msg) {
+  document.getElementById('cvStudioResult').innerHTML =
+    '<p style="text-align:center;padding:1rem"><span class="spinner"></span> ' + msg + ' (this can take up to a minute)…</p>';
+}
+
+function cvScore(id) {
+  _cvBusy('Scoring CV against this job');
+  fetch('/api/cv/score', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: id})
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { document.getElementById('cvStudioResult').innerHTML = '<p style="color:#c62828">' + data.error + '</p>'; return; }
+      renderCvStudio(id, data);
+    })
+    .catch(err => alert('Failed: ' + err));
+}
+
+function cvOptimize(id) {
+  _cvBusy('Optimizing CV for this job');
+  fetch('/api/cv/optimize', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: id})
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { document.getElementById('cvStudioResult').innerHTML = '<p style="color:#c62828">' + data.error + '</p>'; return; }
+      let html = '<h3>✨ Optimization proposal</h3>';
+      if (data.fallback) {
+        html += '<p style="background:#fff8e1;color:#7a5200;padding:.75rem;border-radius:6px">'
+             + '<b>Offline fallback:</b> the AI provider returned no usable response. '
+             + 'This proposal preserves existing resume wording and prioritizes relevant competencies.'
+             + (data.ai_error ? ' Provider detail: ' + data.ai_error : '') + '</p>';
+      }
+      if (data.changes && data.changes.length) {
+        html += '<p><b>What the AI changed:</b></p><ul class="changes-list">';
+        data.changes.forEach(c => html += '<li>' + c + '</li>');
+        html += '</ul>';
+      }
+      if (data.summary) html += '<p><b>New professional summary:</b></p><pre style="background:#f5f7fa;padding:1rem;border-radius:8px;white-space:pre-wrap">' + data.summary + '</pre>';
+      if (data.competencies && data.competencies.length) {
+        html += '<p><b>New competencies:</b></p><ul class="changes-list">';
+        data.competencies.forEach(c => html += '<li>' + c + '</li>');
+        html += '</ul>';
+      }
+      html += '<div class="actions" style="margin:1rem 0">'
+           +   '<button class="apply" onclick="cvApplyUpdate(' + id + ')">✅ Review &amp; update CV</button>'
+           +   '<button onclick="openCvStudio(' + id + ')">Cancel</button>'
+           + '</div>'
+           + '<div id="cvApplyResult"></div>';
+      document.getElementById('cvStudioResult').innerHTML = html;
+      window._cvProposal = data;
+    })
+    .catch(err => alert('Failed: ' + err));
+}
+
+function cvReview(id) {
+  _cvBusy('Running full review');
+  fetch('/api/cv/review', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: id})
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { document.getElementById('cvStudioResult').innerHTML = '<p style="color:#c62828">' + data.error + '</p>'; return; }
+      renderCvStudio(id, data);
+    })
+    .catch(err => alert('Failed: ' + err));
+}
+
+function reviseCvReview(id) {
+  const requirements = Array.from(document.querySelectorAll('#cvStudioBody tr[data-req]')).map(row => ({
+    requirement: row.querySelector('.req-text').textContent.trim(), priority: row.querySelector('.req-priority').value, category: 'User edited'
+  })).filter(item => item.requirement);
+  const instruction = document.getElementById('cvRevisionInstruction').value;
+  _cvBusy('Creating revised requirement analysis');
+  fetch('/api/cv/review/revise', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id: id, requirements: requirements, instruction: instruction})})
+    .then(r => r.json()).then(data => {
+      if (data.error) { document.getElementById('cvStudioResult').innerHTML = '<p style="color:#c62828">' + data.error + '</p>'; return; }
+      renderCvStudio(id, data);
+    }).catch(err => alert('Failed: ' + err));
+}
+
+function cvApplyUpdate(id) {
+  const proposal = window._cvProposal;
+  if (!proposal) { alert('No proposal to apply. Optimize first.'); return; }
+  const res = document.getElementById('cvApplyResult');
+  res.innerHTML = '<p><span class="spinner"></span> Writing optimized CV…</p>';
+  fetch('/api/cv/update', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id: id, summary: proposal.summary, competencies: proposal.competencies})
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { res.innerHTML = '<p style="color:#c62828">' + data.error + '</p>'; return; }
+      res.innerHTML = '<p style="color:#2e7d32"><b>✅ CV updated:</b> ' + data.resume_file + '</p>'
+                    + '<p><button onclick="previewDoc(\'' + data.resume_rel + '\')">📄 Preview new CV</button></p>';
+    })
     .catch(err => alert('Failed: ' + err));
 }
 
@@ -499,10 +802,27 @@ def index():
     for a in apps_raw:
         status = a.get("status", "unknown")
         fg, bg, label = STATUS_COLORS.get(status, ("#666", "#eee", status.replace("_", " ").title()))
+        score = a.get("cv_score")
+        score_display = "—"
+        score_css = "none"
+        if score is not None:
+            try:
+                score_display = str(int(float(score)))
+                score_css = _score_color(score)
+            except (TypeError, ValueError):
+                pass
         apps.append({
+            "id": a.get("id"),
             "company": a.get("company", "—"),
             "position": a.get("position", "—"),
             "location": a.get("location", "—"),
+            "posted_text": a.get("posted_text", ""),
+            "posted_at_fmt": _format_date(a.get("posted_at", "")),
+            "score_display": score_display,
+            "score_css": score_css,
+            "cv_variant": a.get("cv_variant", ""),
+            "can_apply": status == "materials_ready" and bool(a.get("job_url")) and bool(a.get("resume_path")),
+            "can_mark_applied": status not in {"applied", "applying"},
             "badge_fg": fg,
             "badge_bg": bg,
             "badge_label": label,
@@ -667,6 +987,115 @@ def api_status():
     })
 
 
+# Per-application locks (an id being applied right now)
+_applying: set[int] = set()
+_applying_lock = threading.Lock()
+
+
+@app.route("/api/apply", methods=["POST"])
+def api_apply():
+    """Submit a specific tracked application via LinkedIn Easy Apply.
+
+    Body: {"id": <application id>} — must be in materials_ready state with a
+    resume saved. Runs in a background thread; the row refreshes to applied
+    or manual_needed when done.
+    """
+    if STOP_FILE.exists():
+        return jsonify({"error": "Emergency stop is active (remove .stop first)"}), 409
+
+    data = request.get_json(silent=True) or {}
+    app_id = data.get("id")
+    if not app_id:
+        return jsonify({"error": "Missing id"}), 400
+
+    from src.tracker import ApplicationTracker
+
+    tracker = ApplicationTracker(tracker_path=str(TRACKER))
+    record = next((a for a in tracker.applications if a.get("id") == app_id), None)
+    if record is None:
+        return jsonify({"error": f"Application #{app_id} not found"}), 404
+    if record.get("status") != "materials_ready":
+        return jsonify({"error": f"Application #{app_id} is '{record.get('status')}', not materials_ready"}), 409
+    if not record.get("resume_path") or not Path(record["resume_path"]).exists():
+        return jsonify({"error": f"Application #{app_id} has no saved resume"}), 409
+
+    with _applying_lock:
+        if app_id in _applying:
+            return jsonify({"error": f"Application #{app_id} is already being applied"}), 409
+        _applying.add(app_id)
+
+    # Persist the in-progress state before starting the worker.  This gives
+    # the browser something concrete to poll, rather than relying on a fixed
+    # delay that can finish before LinkedIn has completed the submission.
+    tracker.update_status(app_id, "applying", record.get("notes", ""))
+
+    thread = threading.Thread(target=_apply_single_background, args=(app_id,), daemon=True)
+    thread.start()
+    return jsonify({"status": "started", "id": app_id})
+
+
+def _apply_single_background(app_id: int):
+    """Submit one application in a background thread and update the tracker."""
+    from src.tracker import ApplicationTracker
+    from src.linkedin_applicant import LinkedInApplicant
+
+    try:
+        with open(ROOT / "config" / "settings.yaml") as f:
+            settings = yaml.safe_load(f) or {}
+        with open(ROOT / "config" / "profile.yaml") as f:
+            profile = yaml.safe_load(f) or {}
+
+        tracker = ApplicationTracker(tracker_path=str(TRACKER))
+        record = next((a for a in tracker.applications if a.get("id") == app_id), None)
+        if record is None:
+            return
+
+        applicant = LinkedInApplicant(config=settings, profile=profile)
+        applicant.connect_browser()
+        try:
+            result = applicant.apply_to_job(
+                job={
+                    "url": record.get("job_url", ""),
+                    "title": record.get("position", ""),
+                    "company": record.get("company", ""),
+                },
+                resume_path=record.get("resume_path", ""),
+                cover_letter_path=record.get("cover_letter_path", "") or None,
+            )
+        finally:
+            applicant.close()
+
+        status = result.get("status", "apply_failed")
+        new_status = "applied" if status == "applied" else "manual_needed"
+        notes = (record.get("notes") or "") + f" | apply: {result.get('reason', status)}"
+
+        # Copy any screenshots into the application folder
+        out_dir = None
+        if record.get("resume_path"):
+            out_dir = Path(record["resume_path"]).parent
+            for ss_path in result.get("screenshots", []):
+                try:
+                    if ss_path and Path(ss_path).exists():
+                        import shutil
+                        shutil.copy2(ss_path, out_dir / Path(ss_path).name)
+                except Exception:
+                    pass
+
+        tracker.update_status(app_id, new_status, notes.strip())
+        print(f"🚀 Apply #{app_id} {record.get('company')}: {new_status} ({result.get('reason', '')})")
+    except Exception as e:
+        try:
+            ApplicationTracker(tracker_path=str(TRACKER)).update_status(
+                app_id, "manual_needed", f"apply error: {e}"
+            )
+        except Exception:
+            pass
+        print(f"🚀 Apply #{app_id} failed: {e}")
+    finally:
+        with _applying_lock:
+            _applying.discard(app_id)
+
+
 @app.route("/api/start-cycle", methods=["POST"])
 def api_start_cycle():
     """Kick off a scan+apply cycle in a background thread."""
@@ -679,8 +1108,16 @@ def api_start_cycle():
 
     data = request.get_json(silent=True) or {}
     limit = data.get("limit", 5)
-    keyword = data.get("keyword", "compliance manager")
-    location = data.get("location", "San Francisco Bay Area")
+
+    # Default keyword/location come from config/settings.yaml
+    try:
+        with open(ROOT / "config" / "settings.yaml") as f:
+            _settings = yaml.safe_load(f) or {}
+    except Exception:
+        _settings = {}
+    search_cfg = _settings.get("search", {})
+    keyword = data.get("keyword") or (search_cfg.get("keywords") or ["devops engineer"])[0]
+    location = data.get("location") or (search_cfg.get("locations") or ["Remote"])[0]
 
     cycle_id = str(uuid.uuid4())[:8]
 
@@ -708,74 +1145,330 @@ def api_cycle_status():
         return jsonify(dict(_cycle_state))
 
 
-def _tailor_for_job(job_desc, company, role):
-    """Use GPT-4 to generate tailored summary + competencies + cover letter."""
-    from openai import OpenAI
-    from dotenv import load_dotenv
-    load_dotenv(ROOT / ".env")
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+@app.route("/api/application/<int:app_id>")
+def api_application(app_id):
+    """Return the current persisted state for one dashboard row."""
+    record = _get_record(app_id)
+    if record is None:
+        return jsonify({"error": f"Application #{app_id} not found"}), 404
+    return jsonify({
+        "id": app_id,
+        "status": record.get("status", "unknown"),
+        "updated_at": record.get("updated_at", ""),
+    })
 
-    # Read base resume for context
-    base_resume = ""
+
+@app.route("/api/mark-applied", methods=["POST"])
+def api_mark_applied():
+    """Record an application completed manually on LinkedIn or another site."""
+    data = request.get_json(silent=True) or {}
+    app_id = data.get("id")
+    if not isinstance(app_id, int):
+        return jsonify({"error": "Missing or invalid id"}), 400
+
+    from src.tracker import ApplicationTracker
+
+    tracker = ApplicationTracker(tracker_path=str(TRACKER))
+    record = next((a for a in tracker.applications if a.get("id") == app_id), None)
+    if record is None:
+        return jsonify({"error": f"Application #{app_id} not found"}), 404
+    if record.get("status") == "applying":
+        return jsonify({"error": f"Application #{app_id} is currently being submitted"}), 409
+
+    note = (record.get("notes") or "").strip()
+    manual_note = "manually marked applied from dashboard"
+    if manual_note not in note:
+        note = f"{note} | {manual_note}".strip(" |")
+    updated = tracker.update_status(app_id, "applied", note)
+    return jsonify({"id": app_id, "status": updated["status"]})
+
+
+# ---------------------------------------------------------------------------
+# API Endpoints — AI CV Studio (score / optimize / review / update)
+# ---------------------------------------------------------------------------
+
+
+def _get_record(app_id: int):
+    """Fetch one tracker record or return None."""
+    from src.tracker import ApplicationTracker
+
+    tracker = ApplicationTracker(tracker_path=str(TRACKER))
+    return next((a for a in tracker.applications if a.get("id") == app_id), None)
+
+
+def _cv_settings_profile():
+    return _load_settings(), _load_profile()
+
+
+@app.route("/api/cv/status/<int:app_id>")
+def api_cv_status(app_id):
+    """Current CV score + details for one application."""
+    record = _get_record(app_id)
+    if record is None:
+        return jsonify({"error": f"Application #{app_id} not found"}), 404
+
+    details = record.get("cv_score_details") or {}
+    return jsonify({
+        "id": app_id,
+        "company": record.get("company", ""),
+        "position": record.get("position", ""),
+        "score": record.get("cv_score"),
+        "score_css": _score_color(record.get("cv_score")),
+        "breakdown": details.get("breakdown", {}),
+        "strengths": details.get("strengths", []),
+        "gaps": details.get("gaps", []),
+        "recommendation": details.get("recommendation", ""),
+        "requirements": details.get("requirements", []),
+        "analysis_available": details.get("analysis_available", False),
+        "fallback": details.get("fallback", False),
+        "ai_error": details.get("ai_error", ""),
+        "version": details.get("version"),
+        "history": [{"version": item.get("version"), "created_at": item.get("created_at")} for item in record.get("cv_review_history", [])],
+        "model": details.get("model", ""),
+        "variant": record.get("cv_variant", ""),
+        "updated_at": record.get("updated_at", ""),
+    })
+
+
+def _run_cv_task(app_id: int, task: str, criteria=None, instruction="", persist_review=False):
+    """Run score/review/optimize synchronously and return (result_dict, error)."""
+    record = _get_record(app_id)
+    if record is None:
+        return None, (jsonify({"error": f"Application #{app_id} not found"}), 404)
+
+    resume_path = record.get("resume_path", "")
+    if not resume_path or not Path(resume_path).exists():
+        return None, (jsonify({"error": "No saved resume for this application"}), 409)
+
+    jd = record.get("job_description", "")
+    jd_file = record.get("jd_file_path", "")
+    if (not jd or len(jd) < 200) and jd_file and Path(jd_file).exists():
+        try:
+            jd = Path(jd_file).read_text()
+        except Exception:
+            pass
+    if not jd:
+        return None, (jsonify({"error": "No job description stored for this application"}), 409)
+
+    settings, _profile = _cv_settings_profile()
+    from src.cv_optimizer import CVOptimizer
+
+    optimizer = CVOptimizer(config=settings)
+    role = record.get("position", "")
+    company = record.get("company", "")
+
     try:
-        from docx import Document as DocxDoc
-        doc = DocxDoc(str(ROOT / "templates" / "base_resume.docx"))
-        base_resume = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-    except Exception:
-        pass
+        if task == "optimize":
+            result = optimizer.optimize_resume(
+                resume_path, jd, role=role, company=company,
+                analysis=record.get("cv_score_details"),
+            )
+        else:
+            result = optimizer.score_resume(resume_path, jd, role=role, company=company, criteria=criteria, instruction=instruction)
+    except Exception as exc:
+        return None, (jsonify({"error": f"CV task failed: {exc}"}), 500)
 
-    # Read example cover letter for tone
-    example_cl = ""
+    if task != "optimize":
+        # Persist score + details on the record
+        from src.tracker import ApplicationTracker
+
+        tracker = ApplicationTracker(tracker_path=str(TRACKER))
+        if persist_review:
+            result = tracker.append_cv_review(app_id, result) or result
+        else:
+            tracker.update_cv_data(app_id, cv_score=result.get("score"), score_details=result)
+
+    return result, None
+
+
+@app.route("/api/cv/score", methods=["POST"])
+def api_cv_score():
+    """Score the saved resume against the stored job description."""
+    data = request.get_json(silent=True) or {}
+    app_id = data.get("id")
+    if not app_id:
+        return jsonify({"error": "Missing id"}), 400
+
+    result, error = _run_cv_task(app_id, "score")
+    if error:
+        return error
+
+    record = _get_record(app_id) or {}
+    return jsonify({
+        "id": app_id,
+        "company": record.get("company", ""),
+        "position": record.get("position", ""),
+        "score": result.get("score"),
+        "score_css": _score_color(result.get("score")),
+        "breakdown": result.get("breakdown", {}),
+        "strengths": result.get("strengths", []),
+        "gaps": result.get("gaps", []),
+        "recommendation": result.get("recommendation", ""),
+        "requirements": result.get("requirements", []),
+        "analysis_available": result.get("analysis_available", False),
+        "fallback": result.get("fallback", False),
+        "ai_error": result.get("ai_error", ""),
+        "version": result.get("version"),
+        "model": result.get("model", ""),
+        "variant": record.get("cv_variant", ""),
+        "updated_at": record.get("updated_at", ""),
+    })
+
+
+@app.route("/api/cv/review", methods=["POST"])
+def api_cv_review():
+    """Create the first (or next) saved evidence-based review version."""
+    data = request.get_json(silent=True) or {}
+    app_id = data.get("id")
+    if not app_id:
+        return jsonify({"error": "Missing id"}), 400
+    result, error = _run_cv_task(app_id, "review", persist_review=True)
+    if error:
+        return error
+    record = _get_record(app_id) or {}
+    return jsonify({
+        "id": app_id, "company": record.get("company", ""), "position": record.get("position", ""),
+        "score": result.get("score"), "score_css": _score_color(result.get("score")),
+        "breakdown": result.get("breakdown", {}), "strengths": result.get("strengths", []),
+        "gaps": result.get("gaps", []), "recommendation": result.get("recommendation", ""),
+        "requirements": result.get("requirements", []), "analysis_available": result.get("analysis_available", False),
+        "fallback": result.get("fallback", False), "ai_error": result.get("ai_error", ""), "model": result.get("model", ""), "version": result.get("version"),
+        "history": [{"version": item.get("version"), "created_at": item.get("created_at")} for item in record.get("cv_review_history", [])],
+    })
+
+
+@app.route("/api/cv/review/revise", methods=["POST"])
+def api_cv_review_revise():
+    """Save a new review version from edited criteria and AI instructions."""
+    data = request.get_json(silent=True) or {}
+    app_id = data.get("id")
+    criteria = data.get("requirements")
+    instruction = str(data.get("instruction") or "")
+    if not app_id:
+        return jsonify({"error": "Missing id"}), 400
+    if criteria is not None and not isinstance(criteria, list):
+        return jsonify({"error": "Requirements must be a list"}), 400
+    result, error = _run_cv_task(app_id, "review", criteria=criteria, instruction=instruction, persist_review=True)
+    if error:
+        return error
+    record = _get_record(app_id) or {}
+    return jsonify({
+        "id": app_id, "company": record.get("company", ""), "position": record.get("position", ""),
+        "score": result.get("score"), "score_css": _score_color(result.get("score")),
+        "breakdown": result.get("breakdown", {}), "strengths": result.get("strengths", []),
+        "gaps": result.get("gaps", []), "recommendation": result.get("recommendation", ""),
+        "requirements": result.get("requirements", []), "analysis_available": result.get("analysis_available", False),
+        "fallback": result.get("fallback", False), "ai_error": result.get("ai_error", ""), "model": result.get("model", ""), "version": result.get("version"),
+        "history": [{"version": item.get("version"), "created_at": item.get("created_at")} for item in record.get("cv_review_history", [])],
+    })
+
+
+@app.route("/api/cv/optimize", methods=["POST"])
+def api_cv_optimize():
+    """Generate an optimization proposal (summary + competencies + changes).
+
+    Nothing is written until /api/cv/update is called.
+    """
+    data = request.get_json(silent=True) or {}
+    app_id = data.get("id")
+    if not app_id:
+        return jsonify({"error": "Missing id"}), 400
+
+    result, error = _run_cv_task(app_id, "optimize")
+    if error:
+        return error
+
+    if not result.get("summary") and not result.get("competencies"):
+        return jsonify({
+            "error": "AI optimization unavailable — set OPENROUTER_API_KEY in .env"
+        }), 503
+
+    return jsonify({
+        "id": app_id,
+        "summary": result.get("summary", ""),
+        "competencies": result.get("competencies", []),
+        "changes": result.get("changes", []),
+        "model": result.get("model", ""),
+        "fallback": bool(result.get("fallback")),
+        "ai_error": result.get("ai_error", ""),
+    })
+
+
+@app.route("/api/cv/update", methods=["POST"])
+def api_cv_update():
+    """Write an approved optimization into a new version of the resume.
+
+    Body: {"id": <app id>, "summary": str, "competencies": [str, ...]}
+    Produces <name>_Resume_<role>_OPTIMIZED.docx next to the current resume
+    and re-scores it, updating the tracker.
+    """
+    data = request.get_json(silent=True) or {}
+    app_id = data.get("id")
+    if not app_id:
+        return jsonify({"error": "Missing id"}), 400
+    summary = (data.get("summary") or "").strip()
+    competencies = data.get("competencies") or []
+    if not summary and not competencies:
+        return jsonify({"error": "Nothing to apply — summary and competencies are empty"}), 400
+
+    record = _get_record(app_id)
+    if record is None:
+        return jsonify({"error": f"Application #{app_id} not found"}), 404
+
+    resume_path = record.get("resume_path", "")
+    if not resume_path or not Path(resume_path).exists():
+        return jsonify({"error": "No saved resume for this application"}), 409
+
+    settings, _profile = _cv_settings_profile()
+    from src.resume_tailor import ResumeTailor
+    from src.tracker import ApplicationTracker
+
+    src = Path(resume_path)
+    dest = src.with_name(src.stem + "_OPTIMIZED.docx")
     try:
-        from docx import Document as DocxDoc
-        doc = DocxDoc(str(ROOT / "templates" / "base_cover_letter.docx"))
-        example_cl = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-    except Exception:
-        pass
-
-    prompt = f"""Given this resume and job description, provide:
-1. A tailored Professional Summary (one paragraph, ~80 words)
-2. A reordered list of 10 Core Competencies (most relevant first)
-3. A cover letter (3-4 paragraphs, matching the example tone)
-
-RESUME:
-{base_resume[:3000]}
-
-EXAMPLE COVER LETTER (match this tone):
-{example_cl}
-
-JOB: {role} at {company}
-DESCRIPTION:
-{job_desc[:2000]}
-
-RULES:
-- NEVER fabricate experience. Only reference OCC, Prime Trust, Cross River Bank, PG&E.
-- NEVER use em-dashes ( — ). Use commas instead.
-- NEVER use "leverage", "utilize", "synergy", "I'm excited to", "I'm thrilled to".
-- Be direct and professional. No fluff.
-
-Return ONLY valid JSON:
-{{"summary": "...", "competencies": ["...", ...], "cover_letter": "Dear Hiring Team,\\n\\n...\\n\\nThank you for your time,"}}"""
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4",
-            temperature=0.4,
-            messages=[
-                {"role": "system", "content": "You are a professional resume writer. Return only JSON. Never fabricate experience."},
-                {"role": "user", "content": prompt},
-            ],
+        ResumeTailor.clone_and_tailor(
+            base_path=src,
+            output_path=dest,
+            new_summary=summary or None,
+            new_competencies=competencies or None,
         )
-        raw = response.choices[0].message.content or ""
-        clean = raw.strip()
-        if clean.startswith("```"):
-            clean = clean.split("\n", 1)[1] if "\n" in clean else clean[3:]
-            if clean.endswith("```"):
-                clean = clean[:-3]
-        return json.loads(clean)
-    except Exception as e:
-        print(f"  ⚠️ Tailoring failed: {e}")
-        return None
+    except Exception as exc:
+        return jsonify({"error": f"Failed to write optimized CV: {exc}"}), 500
+
+    # Re-score the optimized CV and persist
+    jd = record.get("job_description", "")
+    jd_file = record.get("jd_file_path", "")
+    if (not jd or len(jd) < 200) and jd_file and Path(jd_file).exists():
+        try:
+            jd = Path(jd_file).read_text()
+        except Exception:
+            pass
+
+    score_details = None
+    if jd:
+        try:
+            from src.cv_optimizer import CVOptimizer
+
+            optimizer = CVOptimizer(config=settings)
+            score_result = optimizer.score_resume(str(dest), jd, role=record.get("position", ""), company=record.get("company", ""))
+            score_details = score_result
+        except Exception:
+            score_details = None
+
+    tracker = ApplicationTracker(tracker_path=str(TRACKER))
+    tracker.update_cv_data(
+        app_id,
+        resume_path=str(dest),
+        cv_score=score_details.get("score") if score_details else None,
+        score_details=score_details,
+    )
+
+    return jsonify({
+        "id": app_id,
+        "resume_file": dest.name,
+        "resume_rel": _make_relative(str(dest)),
+        "new_score": score_details.get("score") if score_details else None,
+    })
 
 
 def _run_cycle_background(cycle_id, keyword, location, limit):
@@ -806,19 +1499,11 @@ def _run_cycle_background(cycle_id, keyword, location, limit):
             print(f"📝 Cycle {cycle_id} [{i+1}/{len(jobs)}]: {company} — {title}")
 
             try:
-                # Tailor content via GPT-4
-                tailored = _tailor_for_job(desc, company, title)
-                if tailored:
-                    save_application(
-                        job=job,
-                        tailored_summary=tailored.get("summary", ""),
-                        competencies=tailored.get("competencies", []),
-                        cover_letter_text=tailored.get("cover_letter", ""),
-                        dry_run=False,
-                    )
+                result = save_application(job=job, dry_run=False)
+                if result:
                     print(f"  ✅ Applied: {company} — {title}")
                 else:
-                    print(f"  ⚠️ Skipped (tailoring failed): {company}")
+                    print(f"  ⏭️ Skipped: {company} — {title}")
             except Exception as e:
                 print(f"  ⚠️ Cycle {cycle_id}: Failed on job {i + 1}: {e}")
 

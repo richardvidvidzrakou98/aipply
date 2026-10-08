@@ -1,151 +1,223 @@
 # Aipply
 
-**AI-powered LinkedIn job application bot**
+Aipply is a local, AI-assisted LinkedIn job-search workspace. It finds jobs, prepares role-specific application materials, submits LinkedIn Easy Apply forms when enabled, and keeps a local dashboard and application history.
 
-Aipply (AI + Apply) is an automated system that scans LinkedIn for job postings, auto-applies to matching positions, customizes your resume and cover letter per job using AI, and tracks all applications in one place.
+Your LinkedIn session, CVs, contact details, job descriptions, and generated documents stay in your local project directory or browser profile. Review every generated document and application before relying on it.
 
----
+## What it does
 
-## Features
+- Searches LinkedIn using your keywords, locations, freshness rules, and exclusions.
+- Selects the most relevant DOCX CV variant, then creates a tailored resume and cover letter.
+- Submits LinkedIn **Easy Apply** applications when configured; external career-site jobs are recorded as **Manual Needed** and are never auto-submitted.
+- Provides a local dashboard for application status, documents, screenshots, CV scoring, optimization, and manual status updates.
+- Uses OpenRouter for optional AI features. Without an AI key, scanning and tracking continue, but document and CV-analysis features use limited local fallbacks.
 
-- **Auto-search LinkedIn** — Continuously scans LinkedIn for jobs matching your criteria
-- **Auto-apply to jobs** — Submits applications via browser automation
-- **AI-powered resume tailoring** — Customizes your base resume for each job description using OpenAI
-- **AI-powered cover letter generation** — Generates targeted cover letters per role
-- **Application tracking** — Tracks every application with HTML and XLSX reports
-- **Company exclusion list** — Skip companies you don't want to apply to
-- **Configurable search criteria** — Keywords, locations, experience levels, job types
+## Requirements
 
-## Architecture
+- Python 3.10 or newer
+- Google Chrome or Chromium
+- A LinkedIn account that you can log into manually
+- An OpenRouter API key for AI tailoring, cover letters, and requirement-level CV analysis
 
-- **Language:** Python 3.10+
-- **Browser Automation:** Playwright (with Selenium fallback)
-- **AI Engine:** OpenAI API (GPT-4) for resume/cover letter customization
-- **Document Processing:** python-docx for Word documents, openpyxl for Excel reports
-- **Templating:** Jinja2 for HTML reports
-- **Config:** YAML-based configuration
+Use automation responsibly and ensure your use complies with LinkedIn's terms, the job site's rules, and your local laws. Complete CAPTCHA, 2FA, and any required authorization yourself.
 
-## Directory Structure
-
-```
-aipply/
-├── config/
-│   ├── settings.yaml          # Search criteria, exclusions, schedule
-│   └── profile.yaml           # Candidate profile and strengths
-├── templates/
-│   ├── base_resume.docx       # Your base resume (not tracked in git)
-│   └── base_cover_letter.docx # Your base cover letter (not tracked in git)
-├── src/
-│   ├── __init__.py
-│   ├── linkedin_scanner.py    # Job search and filtering
-│   ├── linkedin_applicant.py  # Application submission
-│   ├── resume_tailor.py       # AI-powered resume customization
-│   ├── cover_letter_gen.py    # AI-powered cover letter generation
-│   └── utils.py               # Shared utilities
-├── scripts/
-│   └── run_cycle.py           # Main entry point
-├── output/
-│   ├── applications/          # Tailored resumes and cover letters per job
-│   ├── reports/               # HTML/XLSX tracking reports
-│   └── tracker.json           # Application history
-├── tests/
-├── requirements.txt
-├── .gitignore
-└── README.md
-```
-
-## Setup
-
-### Prerequisites
-
-- **Python 3.10+**
-- **Google Chrome** (or Chromium) installed
-- **OpenAI API key** with GPT-4 access
-- **LinkedIn account** — you'll log in manually once; the bot reuses your session
-
-### Installation
+## Install
 
 ```bash
-git clone https://github.com/attdobi/aipply.git
+git clone https://github.com/richardvidvidzrakou98/aipply.git
 cd aipply
+
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium
 ```
 
-### Configuration
+Windows PowerShell activation:
 
-1. **Copy the example configs:**
-   ```bash
-   cp config/settings.example.yaml config/settings.yaml
-   cp config/profile.example.yaml config/profile.yaml
-   ```
+```powershell
+.venv\Scripts\Activate.ps1
+```
 
-2. **Edit `config/settings.yaml`** — set your search keywords, target locations, excluded companies, and application preferences.
+## Configure your workspace
 
-3. **Edit `config/profile.yaml`** — fill in your name, email, phone, summary, strengths, and target roles. The AI uses this to tailor resumes and cover letters.
+### 1. Create private configuration files
 
-4. **Add your base documents to `templates/`:**
-   - `templates/base_resume.docx` — your master resume (.docx format)
-   - `templates/base_cover_letter.docx` — an example cover letter for tone/style reference
+```bash
+cp config/settings.example.yaml config/settings.yaml
+cp config/profile.example.yaml config/profile.yaml
+```
 
-5. **Set your OpenAI API key:**
-   ```bash
-   echo "OPENAI_API_KEY=sk-your-key-here" > .env
-   ```
+`config/settings.yaml` controls job searches and application behavior. At minimum, set `search.keywords`, `search.locations`, exclusions, and the application limit.
 
-### Usage
+`config/profile.yaml` contains the candidate information used for application questions and document generation. Do not commit it.
 
-**Run a full application cycle:**
+### 2. Add an OpenRouter key (recommended)
+
+Create a `.env` file in the project root:
+
+```bash
+OPENROUTER_API_KEY=sk-or-v1-your-key
+```
+
+The current settings use `openrouter/free` with fallback models. Free providers can be intermittent; the dashboard labels any local fallback so it is not mistaken for AI analysis. To use a specific OpenRouter model, configure the `llm` section in `config/settings.yaml`:
+
+```yaml
+llm:
+  model: "provider/model-name"
+  fallback_models: []
+  temperature: 0.4
+  max_tokens: 2000
+```
+
+Never commit `.env`, `config/profile.yaml`, CVs, or generated application files.
+
+### 3. Add your CV templates
+
+Place DOCX templates in `templates/`. The built-in selector expects:
+
+```text
+templates/
+├── devops_resume.docx
+├── cloud_resume.docx
+└── software_engineer_resume.docx
+```
+
+You may define your own CV variants with `resume_variants` in `settings.yaml`. Each entry needs a display name, template filename, and matching keywords. A `templates/base_cover_letter.docx` file is optional and is used as a tone/style reference.
+
+### 4. Log into LinkedIn once
+
 ```bash
 source .venv/bin/activate
+python scripts/login.py
+```
+
+Complete login, CAPTCHA, and 2FA in the browser window. The persistent browser profile is saved under `~/.aipply/chrome-profile` and reused by later runs. Run the command again if your LinkedIn session expires.
+
+## Start using Aipply
+
+### Dashboard-first workflow
+
+Start the dashboard:
+
+```bash
+source .venv/bin/activate
+python scripts/dashboard.py
+```
+
+Open <http://127.0.0.1:8092>.
+
+The dashboard lets you:
+
+- Start a scan-and-apply cycle.
+- Open job links and generated resume, cover-letter, and JD files.
+- Apply a prepared Easy Apply job, then see its status update when submission completes.
+- Use **Mark applied** after applying yourself on LinkedIn or an external site.
+- Use **CV** to score, review, revise, optimize, and update a role-specific CV.
+- Stop the current cycle immediately and resume later.
+
+### Command-line workflow
+
+Generate application materials for a small search without submitting:
+
+```bash
+python scripts/quick_run.py "devops engineer" "Remote" --limit 5 --dry-run
+```
+
+Run the full configured search:
+
+```bash
 python scripts/run_cycle.py
 ```
 
-**Dry run (scan jobs, tailor materials, but don't submit):**
+Useful options:
+
 ```bash
-python scripts/run_cycle.py --dry-run
+python scripts/run_cycle.py --dry-run        # scan and prepare, do not submit
+python scripts/run_cycle.py --limit 5        # cap one cycle
+python scripts/run_cycle.py --report-only    # regenerate a report from tracker data
+python scripts/run_cycle.py --verbose        # detailed logs
 ```
 
-**Limit number of applications per cycle:**
+## CV Studio: how analysis works
+
+The dashboard’s **CV** panel performs a role-specific review:
+
+1. The AI extracts requirements from the actual job description and classifies them as critical, required, or preferred.
+2. It provides exact CV quotations for any claimed match.
+3. Aipply verifies those quotations against the saved CV. Unsupported matches become **uncertain**.
+4. The final score is calculated locally from the verified requirement matrix, not accepted directly from the model.
+
+Use **Full review** to save an analysis version. In the matrix, edit the requirement wording or priority and add a natural-language instruction (for example, “treat Kubernetes as preferred”), then choose **Recalculate with edits**. Each revision is saved alongside earlier versions in `output/tracker.json`.
+
+If the provider returns no usable response, the UI shows a clearly labeled keyword-overlap fallback. It is not a requirement-level AI review.
+
+## Application states
+
+| Status               | Meaning                                                                  |
+| -------------------- | ------------------------------------------------------------------------ |
+| Materials Ready      | Resume and supporting materials exist; ready for Easy Apply.             |
+| Applying             | The dashboard is submitting an Easy Apply form.                          |
+| Applied              | Submitted by the automation or manually confirmed with **Mark applied**. |
+| Manual Needed        | External site, CAPTCHA, or another step requires you to act.             |
+| Apply Failed         | Submission could not finish; inspect notes and screenshots.              |
+| Interview / Rejected | Follow-up states that can be recorded in the tracker.                    |
+
+## Output and data
+
+```text
+output/
+├── applications/      # Per-job resumes, cover letters, JD text, screenshots
+├── reports/           # Static HTML reports
+└── tracker.json       # Dashboard source of truth and CV review history
+```
+
+The dashboard reads `tracker.json` on each request. Do not edit it while a cycle is running. Back it up if you want to preserve your application history.
+
+## Safety controls
+
+- Click **Stop** in the dashboard, or create `.stop` in the project root, to halt work before the next application.
+- Remove `.stop` or use **Resume** to allow a future cycle.
+- Keep `application.max_applications_per_cycle` conservative while testing.
+- Begin with `--dry-run` and inspect generated documents before enabling submissions.
+
+## Troubleshooting
+
+### Dashboard will not start
+
+Activate the project environment and confirm dependencies are installed:
+
 ```bash
-python scripts/run_cycle.py --limit 5
+source .venv/bin/activate
+pip install -r requirements.txt
+python scripts/dashboard.py
 ```
 
-**Generate report only (no scanning or applying):**
+Pass a port as the first argument if `8092` is occupied:
+
 ```bash
-python scripts/run_cycle.py --report-only
+python scripts/dashboard.py 8093
 ```
 
-### Output
+### LinkedIn login or scanning fails
 
-Each application creates a directory under `output/applications/`:
-```
-output/applications/Acme_Corp_Compliance_Manager_2026-03-24/
-├── tailored_resume.docx
-├── cover_letter.docx
-├── job_description.txt
-└── screenshot.png       # Pre-submit screenshot for records
-```
+Run `python scripts/login.py` again, complete any LinkedIn prompt manually, and retry. LinkedIn page changes, CAPTCHAs, and expired sessions can prevent browser automation from continuing.
 
-View all applications in the HTML report at `output/reports/applications_report.html`.
+### CV Studio shows a fallback notice
 
-### Cron / Automation
+Check that `.env` contains a valid `OPENROUTER_API_KEY`, restart the dashboard, and retry. Free models may return empty or unavailable responses; the popup includes a provider detail when all retry and fallback attempts fail.
 
-To run every hour automatically, set up a cron job:
+### A job was already applied to manually
+
+Open the job’s dashboard row and select **Mark applied**. LinkedIn does not send the local dashboard a manual-application event.
+
+## Tests
+
 ```bash
-crontab -e
-# Add:
-0 * * * * cd /path/to/aipply && .venv/bin/python scripts/run_cycle.py >> output/cron.log 2>&1
+source .venv/bin/activate
+pytest -q
 ```
-
-Or use OpenClaw's built-in cron for agent-managed scheduling.
-
-## Privacy
-
-Personal data (resume, cover letter, configs with your name/email) is **gitignored by default** and never pushed to the repo. Only example configs ship publicly. See `.gitignore` for details.
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE) when present.

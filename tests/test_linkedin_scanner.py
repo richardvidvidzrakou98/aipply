@@ -119,6 +119,21 @@ class TestFilterResults:
         assert len(result) == 1
         assert result[0]["title"] == "Senior Compliance Manager"
 
+    def test_filter_keeps_only_configured_target_role_titles(self):
+        s = LinkedInScanner(config={
+            "search": {"title_include_keywords": ["devops", "cloud"]},
+            "exclusions": {"companies": [], "keywords": ["senior"]},
+        })
+        jobs = [
+            {"title": "DevOps Engineer", "company": "A", "url": "http://a", "linkedin_job_id": "1"},
+            {"title": "Java Engineer", "company": "B", "url": "http://b", "linkedin_job_id": "2"},
+            {"title": "Senior Cloud Engineer", "company": "C", "url": "http://c", "linkedin_job_id": "3"},
+        ]
+
+        result = s.filter_results(jobs)
+
+        assert [job["title"] for job in result] == ["DevOps Engineer"]
+
 
 class TestSearchJobs:
     def test_search_jobs_requires_browser(self, scanner):

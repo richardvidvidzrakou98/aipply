@@ -1,5 +1,7 @@
 """Tests for resume tailor module."""
 
+import os
+
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -9,11 +11,15 @@ from docx import Document
 
 @pytest.fixture
 def mock_openai():
-    """Mock the OpenAI client before ResumeTailor is instantiated."""
-    with patch("src.resume_tailor.OpenAI") as mock_cls:
-        mock_client = MagicMock()
-        mock_cls.return_value = mock_client
-        yield mock_client
+    """Mock the shared LLM client before ResumeTailor is instantiated."""
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key-for-unit-tests"}):
+        with patch("src.resume_tailor.LLMClient") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.model = "test-model"
+            mock_client.temperature = 0.7
+            mock_client.available.return_value = True
+            mock_cls.return_value = mock_client
+            yield mock_client
 
 
 @pytest.fixture
@@ -41,14 +47,12 @@ def tailor_no_config(mock_openai):
 class TestResumeTailorInit:
     def test_init_with_config(self, tailor):
         assert tailor.config is not None
-        assert "openai" in tailor.config
-        assert tailor.model == "gpt-4"
-        assert tailor.temperature == 0.7
+        assert tailor.model == "test-model"
 
     def test_init_default_config(self, tailor_no_config):
         assert tailor_no_config.config == {}
-        # Should use default model
-        assert tailor_no_config.model == "gpt-4"
+        # Should use the shared LLM client's default model
+        assert tailor_no_config.model
 
     def test_init_none_config(self, mock_openai):
         from src.resume_tailor import ResumeTailor
@@ -80,39 +84,31 @@ class TestReadBaseResume:
 class TestTailorResume:
     def test_tailor_resume_returns_string(self, tailor, mock_openai, tmp_path):
         """tailor_resume should return tailored string content."""
-        # Create a base resume docx
         doc = Document()
         doc.add_paragraph("Jane Doe - Compliance Professional")
         base_path = tmp_path / "resume.docx"
         doc.save(str(base_path))
 
-        # Mock OpenAI response
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = (
+        mock_openai.chat.return_value = (
             "JANE DOE\n\nSUMMARY\nExperienced compliance professional.\n\n"
             "EXPERIENCE\n- Led regulatory compliance team"
         )
-        mock_openai.chat.completions.create.return_value = mock_response
 
         result = tailor.tailor_resume(base_path, "Compliance manager role", "Acme", "Manager")
         assert isinstance(result, str)
         assert "JANE DOE" in result
 
-    def test_tailor_resume_calls_openai(self, tailor, mock_openai, tmp_path):
-        """tailor_resume should call OpenAI chat completions."""
+    def test_tailor_resume_calls_llm(self, tailor, mock_openai, tmp_path):
+        """tailor_resume should call the shared LLM client."""
         doc = Document()
         doc.add_paragraph("Resume content")
         base_path = tmp_path / "resume.docx"
         doc.save(str(base_path))
 
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Tailored content"
-        mock_openai.chat.completions.create.return_value = mock_response
+        mock_openai.chat.return_value = "Tailored content"
 
         tailor.tailor_resume(base_path, "Job desc")
-        mock_openai.chat.completions.create.assert_called_once()
+        mock_openai.chat.assert_called_once()
 
 
 class TestSaveTailoredResume:
@@ -149,13 +145,10 @@ class TestTailorAndSave:
         output_dir = tmp_path / "output"
         output_dir.mkdir()
 
-        # Mock OpenAI response
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = (
+        # Mock LLM response
+        mock_openai.chat.return_value = (
             "Jane Doe\n\nSUMMARY\nTailored for compliance role at Acme."
         )
-        mock_openai.chat.completions.create.return_value = mock_response
 
         result = tailor.tailor_and_save(
             base_resume_path=base_path,

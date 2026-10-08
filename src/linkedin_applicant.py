@@ -47,7 +47,11 @@ class LinkedInApplicant:
                      connects to an existing Chrome instance instead.
         """
         # Remove stale SingletonLock to prevent "profile in use" errors
-        lock_path = Path.home() / ".aipply" / "chrome-profile" / "SingletonLock"
+        profile_dir = Path(
+            (self.config.get("browser") or {}).get("profile_dir")
+            or str(Path.home() / ".aipply" / "chrome-profile")
+        )
+        lock_path = profile_dir / "SingletonLock"
         try:
             os.remove(lock_path)
         except OSError:
@@ -67,7 +71,10 @@ class LinkedInApplicant:
             else:
                 self.page = contexts[0].new_page() if contexts else self.browser.new_context().new_page()
         else:
-            profile_dir = Path.home() / ".aipply" / "chrome-profile"
+            profile_dir = Path(
+                (self.config.get("browser") or {}).get("profile_dir")
+                or str(Path.home() / ".aipply" / "chrome-profile")
+            )
             profile_dir.mkdir(parents=True, exist_ok=True)
             context = self.playwright.chromium.launch_persistent_context(
                 user_data_dir=str(profile_dir),
@@ -137,12 +144,15 @@ class LinkedInApplicant:
                     "success": False,
                     "status": "manual_needed",
                     "reason": "captcha_detected",
+                    "apply_method": "manual",
                     "screenshots": list(self.screenshots),
                 }
 
             self._take_screenshot(self.page, job, output_dir, "job_page")
 
-            # Find Apply button — Easy Apply (stays on LinkedIn) or Apply (external)
+            # Find Apply button — Easy Apply (stays on LinkedIn) or Apply (external).
+            # Per policy: ONLY Easy Apply jobs are automated. External-site
+            # applications are flagged for manual handling.
             easy_apply_btn = None
             external_apply_btn = None
             is_easy_apply = False
@@ -150,23 +160,22 @@ class LinkedInApplicant:
             # First: look for Easy Apply
             for ea_selector in [
                 'a[aria-label*="Easy Apply"]',
-                'a:has-text("Easy Apply")',
                 'button[aria-label*="Easy Apply"]',
+                'a:has-text("Easy Apply")',
                 'button:has-text("Easy Apply")',
             ]:
                 try:
                     loc = self.page.locator(ea_selector).first
-                    if loc.is_visible(timeout=2000):
-                        btn_text = loc.inner_text().strip()
-                        if "Easy" in btn_text:
-                            easy_apply_btn = loc
-                            is_easy_apply = True
-                            logger.info(f"Found Easy Apply: '{btn_text}'")
-                            break
+                    loc.wait_for(state="visible", timeout=2000)
+                    easy_apply_btn = loc
+                    is_easy_apply = True
+                    logger.info(f"Found Easy Apply button")
+                    break
                 except Exception:
                     continue
 
-            # Second: if no Easy Apply, look for external Apply
+            # Second: if no Easy Apply, detect external Apply — but do NOT
+            # automate it. Flag for manual application instead.
             if not easy_apply_btn:
                 for ap_selector in [
                     'a[aria-label*="Apply to this job"]',
@@ -175,52 +184,37 @@ class LinkedInApplicant:
                 ]:
                     try:
                         loc = self.page.locator(ap_selector).first
-                        if loc.is_visible(timeout=2000):
-                            external_apply_btn = loc
-                            logger.info(f"Found external Apply button")
-                            break
+                        loc.wait_for(state="visible", timeout=2000)
+                        external_apply_btn = loc
+                        logger.info(f"Found external Apply button — job requires manual application")
+                        break
                     except Exception:
                         continue
 
             if not easy_apply_btn and not external_apply_btn:
-                logger.info(f"No Apply button found for {role} at {company}")
+                logger.info(f"No apply button found for {role} at {company}")
                 return {
                     "success": False,
                     "status": "manual_needed",
-                    "reason": "no_apply_button",
+                    "reason": "not_easy_apply",
+                    "apply_method": "manual",
                     "screenshots": list(self.screenshots),
                 }
 
-            # Handle external Apply — open the career site and try to fill out the form
+            # External Apply detected → never automate. Return manual flag.
             if external_apply_btn and not easy_apply_btn:
-                logger.info(f"External Apply for {role} at {company} — navigating to career site")
-                time.sleep(random.uniform(2, 4))
-                external_apply_btn.click()
-                time.sleep(random.uniform(4, 7))
-
-                # Switch to the new tab if one opened
-                pages = self.page.context.pages
-                ext_page = pages[-1] if len(pages) > 1 else self.page
-                time.sleep(random.uniform(2, 4))
-                self._take_screenshot(ext_page, job, output_dir, "external_career_site")
-                logger.info(f"External career site: {ext_page.url}")
-
-                # Try to fill out external application form
-                try:
-                    result = self._fill_external_application(ext_page, job, resume_path, cover_letter_path, output_dir)
-                    if len(pages) > 1:
-                        ext_page.close()
-                    return result
-                except Exception as e:
-                    logger.warning(f"External application failed: {e}")
-                    if len(pages) > 1:
-                        ext_page.close()
-                    return {
-                        "success": False,
-                        "status": "manual_needed",
-                        "reason": f"external_apply_failed: {e}",
-                        "screenshots": list(self.screenshots),
-                    }
+                logger.info(
+                    f"External application required for {role} at {company} — "
+                    "flagging for manual apply (policy: Easy Apply only)"
+                )
+                self._take_screenshot(self.page, job, output_dir, "external_manual_flag")
+                return {
+                    "success": False,
+                    "status": "manual_needed",
+                    "reason": "external_site_apply",
+                    "apply_method": "manual",
+                    "screenshots": list(self.screenshots),
+                }
 
             # Click Easy Apply
             time.sleep(random.uniform(2, 5))
@@ -247,6 +241,7 @@ class LinkedInApplicant:
                         "success": True,
                         "status": "applied",
                         "reason": "easy_apply_submitted",
+                        "apply_method": "easy_apply",
                         "screenshots": list(self.screenshots),
                     }
 
@@ -263,6 +258,7 @@ class LinkedInApplicant:
                 "success": False,
                 "status": "apply_failed",
                 "reason": "dialog_navigation_failed_after_max_steps",
+                "apply_method": "easy_apply",
                 "screenshots": list(self.screenshots),
             }
 
@@ -276,6 +272,7 @@ class LinkedInApplicant:
                 "success": False,
                 "status": "apply_failed",
                 "reason": str(e),
+                "apply_method": "unknown",
                 "screenshots": list(self.screenshots),
             }
 
@@ -402,9 +399,12 @@ class LinkedInApplicant:
         try:
             modal = page.locator('div[role="dialog"], .artdeco-modal').first
             email_select = modal.locator("select").first
-            if email_select.is_visible(timeout=1000):
+            target_email = (
+                self.candidate.get("email")
+                or self.config.get("application", {}).get("email", "")
+            )
+            if email_select.is_visible(timeout=1000) and target_email:
                 # Check if the desired email is available as an option
-                target_email = "danna.dobi@gmail.com"
                 options = email_select.locator("option").all()
                 already_selected = False
                 for opt in options:
@@ -425,7 +425,7 @@ class LinkedInApplicant:
 
         # Phone number — text input near phone/mobile label
         try:
-            phone_target = "5103338812"
+            phone_target = self.candidate.get("phone", "")
             # Try multiple selectors for phone input
             phone_selectors = [
                 'input[id*="phoneNumber"]',
@@ -496,7 +496,8 @@ class LinkedInApplicant:
         Args:
             page: Playwright Page instance.
         """
-        # Pattern → answer mapping
+        # Pattern → answer mapping. Defaults can be overridden per-candidate
+        # via profile.yaml: application_questions: {"require sponsorship": "Yes"}
         question_answers = {
             "authorized to work": "Yes",
             "work authorization": "Yes",
@@ -504,9 +505,12 @@ class LinkedInApplicant:
             "require sponsorship": "No",
             "sponsorship": "No",
             "visa sponsorship": "No",
-            "years of experience": "9",
-            "experience do you have": "9",
         }
+        question_answers.update(self.profile.get("application_questions", {}))
+        years_exp = str(self.candidate.get("years_experience", "") or "").strip()
+        if years_exp:
+            question_answers["years of experience"] = years_exp
+            question_answers["experience do you have"] = years_exp
 
         # Handle radio buttons (fieldset/legend based)
         try:
@@ -673,10 +677,11 @@ class LinkedInApplicant:
             return ""
 
     def _fill_external_application(self, page, job, resume_path, cover_letter_path, output_dir):
-        """Try to fill out an external career site application form.
-        
-        Uses common patterns across ATS systems (Greenhouse, Lever, Workday, etc.)
-        to find and fill form fields, upload resume, and submit.
+        """Fill out an external career site application form.
+
+        NOTE: not called by the default pipeline — current policy automates
+        Easy Apply only and flags external applications for manual handling.
+        Kept for optional manual/assisted use.
         """
         company = job.get("company", "")
         role = job.get("title", "")
@@ -690,6 +695,17 @@ class LinkedInApplicant:
 
         filled_something = False
 
+        # Candidate identity from profile (config-driven, never hardcoded)
+        full_name = (self.candidate.get("name") or "").strip()
+        name_parts = full_name.split()
+        first_name = name_parts[0] if name_parts else ""
+        last_name = " ".join(name_parts[1:]) if len(name_parts) > 1 else ""
+        candidate_email = (
+            self.candidate.get("email")
+            or self.config.get("application", {}).get("email", "")
+        )
+        candidate_phone = self.candidate.get("phone", "")
+
         # Fill name fields
         for sel in name_fields:
             try:
@@ -699,11 +715,11 @@ class LinkedInApplicant:
                     if not val.strip():
                         field_name = (el.get_attribute("name") or el.get_attribute("placeholder") or "").lower()
                         if "first" in field_name:
-                            el.fill("Danna")
+                            el.fill(first_name)
                         elif "last" in field_name:
-                            el.fill("Dobi")
+                            el.fill(last_name)
                         else:
-                            el.fill("Danna Dobi")
+                            el.fill(full_name)
                         time.sleep(random.uniform(1, 2))
                         filled_something = True
                         logger.info(f"Filled name field: {sel}")
@@ -717,7 +733,7 @@ class LinkedInApplicant:
                 if el and el.is_visible():
                     val = el.input_value() or ""
                     if not val.strip():
-                        el.fill("danna.dobi@gmail.com")
+                        el.fill(candidate_email)
                         time.sleep(random.uniform(1, 2))
                         filled_something = True
                         logger.info(f"Filled email: {sel}")
@@ -731,7 +747,7 @@ class LinkedInApplicant:
                 if el and el.is_visible():
                     val = el.input_value() or ""
                     if not val.strip():
-                        el.fill("5103338812")
+                        el.fill(candidate_phone)
                         time.sleep(random.uniform(1, 2))
                         filled_something = True
                         logger.info(f"Filled phone: {sel}")

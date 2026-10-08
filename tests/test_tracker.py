@@ -46,6 +46,17 @@ class TestApplicationTracker:
         assert updated["status"] == "interview"
         assert updated["notes"] == "Phone screen scheduled"
 
+    def test_append_cv_review_preserves_versions(self, tracker):
+        tracker.add_application(company="Acme", position="Engineer", job_url="u")
+        first = tracker.append_cv_review(1, {"score": 40, "requirements": []})
+        second = tracker.append_cv_review(1, {"score": 65, "requirements": []})
+        app = tracker.applications[0]
+
+        assert first["version"] == 1
+        assert second["version"] == 2
+        assert app["cv_score"] == 65
+        assert len(app["cv_review_history"]) == 2
+
     def test_get_applications_filtered(self, tracker):
         tracker.add_application(company="A", position="P1", job_url="u1", status="applied")
         tracker.add_application(company="B", position="P2", job_url="u2", status="interview")

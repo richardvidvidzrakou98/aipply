@@ -1,5 +1,7 @@
 """Tests for cover letter generator module."""
 
+import os
+
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -9,11 +11,15 @@ from docx import Document
 
 @pytest.fixture
 def mock_openai():
-    """Mock the OpenAI client before CoverLetterGenerator is instantiated."""
-    with patch("src.cover_letter_gen.OpenAI") as mock_cls:
-        mock_client = MagicMock()
-        mock_cls.return_value = mock_client
-        yield mock_client
+    """Mock the shared LLM client before CoverLetterGenerator is instantiated."""
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key-for-unit-tests"}):
+        with patch("src.cover_letter_gen.LLMClient") as mock_cls:
+            mock_client = MagicMock()
+            mock_client.model = "test-model"
+            mock_client.temperature = 0.7
+            mock_client.available.return_value = True
+            mock_cls.return_value = mock_client
+            yield mock_client
 
 
 @pytest.fixture
@@ -55,12 +61,11 @@ class TestCoverLetterGenInit:
     def test_init_with_config(self, cover_gen):
         assert cover_gen.config is not None
         assert "openai" in cover_gen.config
-        assert cover_gen.model == "gpt-4"
-        assert cover_gen.temperature == 0.7
+        assert cover_gen.model == "test-model"
 
     def test_init_default_config(self, cover_gen_no_config):
         assert cover_gen_no_config.config == {}
-        assert cover_gen_no_config.model == "gpt-4"
+        assert cover_gen_no_config.model  # shared LLM default
 
     def test_init_none_config(self, mock_openai):
         from src.cover_letter_gen import CoverLetterGenerator
@@ -72,16 +77,13 @@ class TestCoverLetterGenInit:
 class TestGenerate:
     def test_generate_returns_string(self, cover_gen, mock_openai, candidate_profile):
         """generate should return cover letter text."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = (
+        mock_openai.chat.return_value = (
             "Dear Hiring Manager,\n\n"
             "I am excited about the Compliance Manager position at Acme Corp. "
             "With my background in regulatory compliance and risk management, "
             "I believe I would be a strong fit.\n\n"
             "Sincerely,\nJane Doe"
         )
-        mock_openai.chat.completions.create.return_value = mock_response
 
         result = cover_gen.generate(
             "Seeking a compliance manager with 5 years experience",
@@ -91,14 +93,11 @@ class TestGenerate:
         )
         assert isinstance(result, str)
         assert "Compliance Manager" in result or "compliance" in result.lower()
-        mock_openai.chat.completions.create.assert_called_once()
+        mock_openai.chat.assert_called_once()
 
     def test_generate_with_empty_description(self, cover_gen, mock_openai, candidate_profile):
         """generate should handle empty job description gracefully."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Dear Hiring Manager,\n\nI am interested.\n\nSincerely,\nJane"
-        mock_openai.chat.completions.create.return_value = mock_response
+        mock_openai.chat.return_value = "Dear Hiring Manager,\n\nI am interested.\n\nSincerely,\nJane"
 
         result = cover_gen.generate("", candidate_profile)
         assert isinstance(result, str)
@@ -106,26 +105,19 @@ class TestGenerate:
 
     def test_generate_with_empty_profile(self, cover_gen, mock_openai):
         """generate should handle empty candidate profile."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Dear Hiring Manager,\n\nCover letter.\n\nBest regards"
-        mock_openai.chat.completions.create.return_value = mock_response
+        mock_openai.chat.return_value = "Dear Hiring Manager,\n\nCover letter.\n\nBest regards"
 
         result = cover_gen.generate("Job description text", {})
         assert isinstance(result, str)
 
     def test_generate_with_example_letter(self, cover_gen, mock_openai, candidate_profile, tmp_path):
         """generate should incorporate example letter when provided."""
-        # Create example letter docx
         doc = Document()
         doc.add_paragraph("Example cover letter with professional tone.")
         example_path = tmp_path / "example.docx"
         doc.save(str(example_path))
 
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Generated letter matching style."
-        mock_openai.chat.completions.create.return_value = mock_response
+        mock_openai.chat.return_value = "Generated letter matching style."
 
         result = cover_gen.generate(
             "Job desc", candidate_profile,
@@ -133,8 +125,7 @@ class TestGenerate:
             example_letter_path=example_path,
         )
         assert isinstance(result, str)
-        # Verify the call includes the user prompt (OpenAI was called)
-        mock_openai.chat.completions.create.assert_called_once()
+        mock_openai.chat.assert_called_once()
 
 
 class TestSaveCoverLetter:
@@ -165,14 +156,11 @@ class TestGenerateAndSave:
         output_dir = tmp_path / "output"
         output_dir.mkdir()
 
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = (
+        mock_openai.chat.return_value = (
             "Dear Hiring Manager,\n\n"
             "I am excited about this opportunity.\n\n"
             "Sincerely,\nJane Doe"
         )
-        mock_openai.chat.completions.create.return_value = mock_response
 
         result = cover_gen.generate_and_save(
             job_description="Compliance manager role",
@@ -189,10 +177,7 @@ class TestGenerateAndSave:
 
     def test_generate_and_save_default_output_dir(self, cover_gen, mock_openai, candidate_profile):
         """generate_and_save should create default output dir when none specified."""
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Generated letter."
-        mock_openai.chat.completions.create.return_value = mock_response
+        mock_openai.chat.return_value = "Generated letter."
 
         result = cover_gen.generate_and_save(
             job_description="Job desc",

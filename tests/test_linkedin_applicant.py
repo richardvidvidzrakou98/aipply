@@ -212,10 +212,10 @@ class TestFillContactInfo:
         mock_email_select.input_value.return_value = ""
         mock_email_select.evaluate.return_value = ""
 
-        # Mock option with target email
+        # Mock option with target email (matches the profile fixture)
         mock_option = MagicMock()
-        mock_option.text_content.return_value = "danna.dobi@gmail.com"
-        mock_option.get_attribute.return_value = "danna.dobi@gmail.com"
+        mock_option.text_content.return_value = "jane@example.com"
+        mock_option.get_attribute.return_value = "jane@example.com"
         mock_email_select.locator.return_value.all.return_value = [mock_option]
 
         # Chain: modal.locator("select").first -> mock_email_select
@@ -226,7 +226,7 @@ class TestFillContactInfo:
 
         # Should not raise any exceptions
         applicant._fill_contact_info(mock_page)
-        mock_email_select.select_option.assert_called_once_with(label="danna.dobi@gmail.com")
+        mock_email_select.select_option.assert_called_once_with(label="jane@example.com")
 
 
 class TestUploadResume:
